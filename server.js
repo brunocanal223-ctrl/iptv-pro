@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 
@@ -10,10 +10,11 @@ app.use(express.json());
 // 🔥 SUA URL DO RENDER
 const BASE_URL = "https://iptv-cursos.onrender.com";
 
-const db = new sqlite3.Database('./database.db');
+// ===== BANCO =====
+const db = new Database('./database.db');
 
 // ===== TABELAS =====
-db.run(`
+db.prepare(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT,
@@ -21,16 +22,16 @@ CREATE TABLE IF NOT EXISTS users (
   expires_at TEXT,
   created_at TEXT
 )
-`);
+`).run();
 
-db.run(`
+db.prepare(`
 CREATE TABLE IF NOT EXISTS tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token TEXT,
   user_id INTEGER,
   expires_at TEXT
 )
-`);
+`).run();
 
 // ===== PAINEL =====
 app.get('/create-user', (req, res) => {
@@ -73,7 +74,7 @@ app.get('/create-user', (req, res) => {
   `);
 });
 
-// ===== API CRIAR USUÁRIO =====
+// ===== CRIAR USUÁRIO =====
 app.get('/api/create-user', async (req, res) => {
   const dias = parseInt(req.query.dias) || 30;
 
@@ -85,27 +86,26 @@ app.get('/api/create-user', async (req, res) => {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + dias);
 
-  db.run(
-    `INSERT INTO users (username, password_hash, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-    [username, passwordHash, expiresAt.toISOString(), new Date().toISOString()],
-    function () {
-      const userId = this.lastID;
-      const token = uuidv4();
+  const result = db.prepare(`
+    INSERT INTO users (username, password_hash, expires_at, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run(username, passwordHash, expiresAt.toISOString(), new Date().toISOString());
 
-      db.run(
-        `INSERT INTO tokens (token, user_id, expires_at) VALUES (?, ?, ?)`,
-        [token, userId, expiresAt.toISOString()]
-      );
+  const userId = result.lastInsertRowid;
+  const token = uuidv4();
 
-      const link = `${BASE_URL}/p/${token}`;
+  db.prepare(`
+    INSERT INTO tokens (token, user_id, expires_at)
+    VALUES (?, ?, ?)
+  `).run(token, userId, expiresAt.toISOString());
 
-      res.json({
-        username,
-        password,
-        link
-      });
-    }
-  );
+  const link = `${BASE_URL}/p/${token}`;
+
+  res.json({
+    username,
+    password,
+    link
+  });
 });
 
 // ===== LINK CURTO =====
@@ -117,14 +117,15 @@ app.get('/p/:token', (req, res) => {
 app.get('/playlist', (req, res) => {
   const { token } = req.query;
 
-  db.get(`SELECT * FROM tokens WHERE token = ?`, [token], (err, tokenRow) => {
-    if (!tokenRow) return res.status(403).send("Token inválido");
+  const tokenRow = db.prepare(`SELECT * FROM tokens WHERE token = ?`).get(token);
 
-    if (new Date() > new Date(tokenRow.expires_at)) {
-      return res.status(403).send("Expirado");
-    }
+  if (!tokenRow) return res.status(403).send("Token inválido");
 
-    const playlist = `#EXTM3U
+  if (new Date() > new Date(tokenRow.expires_at)) {
+    return res.status(403).send("Expirado");
+  }
+
+  const playlist = `#EXTM3U
 #EXTINF:-1 tvg-name="Dark S01E09" group-title="Séries",Dark S01E09
 ${BASE_URL}/proxy?url=http://topalfa.sbs:80/series/686926821/138484414/10819995.mp4&token=${token}
 
@@ -135,37 +136,36 @@ ${BASE_URL}/proxy?url=http://topalfa.sbs:80/series/686926821/138484414/10819996.
 ${BASE_URL}/proxy?url=http://topalfa.sbs:80/series/686926821/138484414/10819997.mp4&token=${token}
 `;
 
-    res.setHeader('Content-Type', 'audio/x-mpegurl');
-    res.send(playlist);
-  });
+  res.setHeader('Content-Type', 'audio/x-mpegurl');
+  res.send(playlist);
 });
 
 // ===== PROXY =====
 app.get('/proxy', async (req, res) => {
   const { url, token } = req.query;
 
-  db.get(`SELECT * FROM tokens WHERE token = ?`, [token], async (err, tokenRow) => {
-    if (!tokenRow) return res.status(403).send("Bloqueado");
+  const tokenRow = db.prepare(`SELECT * FROM tokens WHERE token = ?`).get(token);
 
-    if (new Date() > new Date(tokenRow.expires_at)) {
-      return res.status(403).send("Expirado");
-    }
+  if (!tokenRow) return res.status(403).send("Bloqueado");
 
-    try {
-      const response = await axios({
-        method: 'GET',
-        url: url,
-        responseType: 'stream'
-      });
+  if (new Date() > new Date(tokenRow.expires_at)) {
+    return res.status(403).send("Expirado");
+  }
 
-      response.data.pipe(res);
-    } catch (err) {
-      res.status(500).send("Erro ao carregar vídeo");
-    }
-  });
+  try {
+    const response = await axios({
+      method: 'GET',
+      url: url,
+      responseType: 'stream'
+    });
+
+    response.data.pipe(res);
+  } catch (err) {
+    res.status(500).send("Erro ao carregar vídeo");
+  }
 });
 
-// ===== START (IMPORTANTE PRO RENDER) =====
+// ===== START (RENDER) =====
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
