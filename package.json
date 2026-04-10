@@ -1,22 +1,14 @@
 {
-  "name": "iptv-pro",
+  "name": "iptv-server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "axios": "^1.15.0",
-    "bcrypt": "^6.0.0",
-    "better-sqlite3": "^12.8.0",
-    "cors": "^2.8.6",
-    "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "uuid": "^13.0.0"
+    "bcrypt": "^5.1.0",
+    "crypto": "^1.0.1",
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6"
   }
 }

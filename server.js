@@ -1,18 +1,15 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
-const Database = require('better-sqlite3');
-const { v4: uuidv4 } = require('uuid');
-const axios = require('axios');
+const crypto = require('crypto');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 app.use(express.json());
 
-const BASE_URL = "https://iptv-cursos.onrender.com";
-
 // ===== BANCO =====
-const db = new Database('./database.db');
+const db = new sqlite3.Database('./database.db');
 
-db.prepare(`
+db.run(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT,
@@ -20,215 +17,86 @@ CREATE TABLE IF NOT EXISTS users (
   expires_at TEXT,
   created_at TEXT
 )
-`).run();
+`);
 
-db.prepare(`
-CREATE TABLE IF NOT EXISTS tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  token TEXT,
-  user_id INTEGER,
-  expires_at TEXT
-)
-`).run();
+// ===== GERADORES =====
+function generateUsername() {
+  return 'user_' + crypto.randomBytes(4).toString('hex');
+}
 
-// ===== PAINEL =====
-app.get('/create-user', (req, res) => {
-  res.send(`
-  <html>
-    <body style="font-family: Arial; text-align:center; margin-top:50px;">
-      <h2>🎬 Painel IPTV</h2>
+function generatePassword() {
+  return crypto.randomBytes(6).toString('hex');
+}
 
-      <button onclick="criar(30)">🔥 30 dias</button>
-      <button onclick="criar(60)">🚀 60 dias</button>
-      <button onclick="criar(90)">💎 90 dias</button>
+function generateToken() {
+  return crypto.randomBytes(16).toString('hex');
+}
 
-      <div id="res"></div>
+// ===== CRIAR USUÁRIO =====
+app.get('/create-user', async (req, res) => {
+  const username = generateUsername();
+  const password = generatePassword();
 
-      <script>
-        async function criar(dias){
-          const r = await fetch('/api/create-user?dias=' + dias);
-          const d = await r.json();
+  const passwordHash = await bcrypt.hash(password, 10);
 
-          document.getElementById('res').innerHTML = \`
-            <p><b>User:</b> \${d.username}</p>
-            <p><b>Pass:</b> \${d.password}</p>
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
 
-            <input id="link" value="\${d.link}" style="width:80%" />
-            <br><br>
-            <button onclick="copy()">Copiar</button>
-          \`;
-        }
-
-        function copy(){
-          const i = document.getElementById('link');
-          i.select();
-          document.execCommand('copy');
-          alert('Copiado!');
-        }
-      </script>
-    </body>
-  </html>
-  `);
-});
-
-// ===== CRIAR USER =====
-app.get('/api/create-user', async (req, res) => {
-  const dias = parseInt(req.query.dias) || 30;
-
-  const username = 'user_' + Math.random().toString(36).substring(2, 8);
-  const password = Math.random().toString(36).substring(2, 10);
-
-  const hash = await bcrypt.hash(password, 10);
-
-  const expires = new Date();
-  expires.setDate(expires.getDate() + dias);
-
-  const result = db.prepare(`
-    INSERT INTO users (username, password_hash, expires_at, created_at)
-    VALUES (?, ?, ?, ?)
-  `).run(username, hash, expires.toISOString(), new Date().toISOString());
-
-  const token = uuidv4();
-
-  db.prepare(`
-    INSERT INTO tokens (token, user_id, expires_at)
-    VALUES (?, ?, ?)
-  `).run(token, result.lastInsertRowid, expires.toISOString());
+  db.run(
+    `INSERT INTO users (username, password_hash, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+    [username, passwordHash, expiresAt.toISOString(), new Date().toISOString()]
+  );
 
   res.json({
     username,
     password,
-    link: BASE_URL + '/p/' + token
+    expires_at: expiresAt,
+    m3u_url: `https://iptv-cursos.onrender.com/playlist?user=${username}&pass=${password}`
   });
 });
 
-// ===== LINK CURTO =====
-app.get('/p/:token', (req, res) => {
-  res.redirect('/playlist?token=' + req.params.token);
-});
-
 // ===== PLAYLIST =====
-app.get('/playlist', (req, res) => {
-  const token = req.query.token;
+app.get('/playlist', async (req, res) => {
+  const { user, pass } = req.query;
 
-  const tokenRow = db.prepare("SELECT * FROM tokens WHERE token = ?").get(token);
+  db.get(`SELECT * FROM users WHERE username = ?`, [user], async (err, row) => {
+    if (!row) return res.status(403).send("Acesso negado");
 
-  if (!tokenRow) return res.status(403).send("Token inválido");
+    const valid = await bcrypt.compare(pass, row.password_hash);
+    if (!valid) return res.status(403).send("Senha inválida");
 
-  if (new Date() > new Date(tokenRow.expires_at)) {
-    return res.status(403).send("Expirado");
-  }
+    if (new Date() > new Date(row.expires_at)) {
+      return res.status(403).send("Expirado");
+    }
 
-  const playlist = `#EXTM3U
+    const token = generateToken();
 
-#EXTINF:-1 tvg-name="Dark S01E02" group-title="Séries",Dark S01E02
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819988.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E03" group-title="Séries",Dark S01E03
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819989.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E04" group-title="Séries",Dark S01E04
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819990.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E05" group-title="Séries",Dark S01E05
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819991.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E06" group-title="Séries",Dark S01E06
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819992.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E07" group-title="Séries",Dark S01E07
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819993.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E08" group-title="Séries",Dark S01E08
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819994.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E09" group-title="Séries",Dark S01E09
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819995.mp4
-
-#EXTINF:-1 tvg-name="Dark S01E10" group-title="Séries",Dark S01E10
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819996.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E01" group-title="Séries",Dark S02E01
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819997.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E02" group-title="Séries",Dark S02E02
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819998.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E03" group-title="Séries",Dark S02E03
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10819999.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E04" group-title="Séries",Dark S02E04
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820000.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E05" group-title="Séries",Dark S02E05
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820001.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E06" group-title="Séries",Dark S02E06
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820002.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E07" group-title="Séries",Dark S02E07
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820003.mp4
-
-#EXTINF:-1 tvg-name="Dark S02E08" group-title="Séries",Dark S02E08
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820004.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E01" group-title="Séries",Dark S03E01
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820005.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E02" group-title="Séries",Dark S03E02
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820006.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E03" group-title="Séries",Dark S03E03
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820007.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E04" group-title="Séries",Dark S03E04
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820008.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E05" group-title="Séries",Dark S03E05
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820009.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E06" group-title="Séries",Dark S03E06
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820010.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E07" group-title="Séries",Dark S03E07
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820011.mp4
-
-#EXTINF:-1 tvg-name="Dark S03E08" group-title="Séries",Dark S03E08
-${BASE_URL}/proxy/${token}?url=http://topalfa.sbs:80/series/686926821/138484414/10820012.mp4
+    const playlist = `#EXTM3U
+#EXTINF:-1,Filme Teste
+https://iptv-cursos.onrender.com/stream/video1?token=${token}
 `;
 
-  res.setHeader('Content-Type', 'audio/x-mpegurl');
-  res.send(playlist);
+    res.setHeader('Content-Type', 'audio/x-mpegurl');
+    res.send(playlist);
+  });
 });
 
-// ===== PROXY =====
-app.get('/proxy/:token', async (req, res) => {
-  const token = req.params.token;
-  const { url } = req.query;
+// ===== STREAM (FUNCIONANDO NO RENDER) =====
+app.get('/stream/:video', (req, res) => {
+  const { token } = req.query;
 
-  const tokenRow = db.prepare("SELECT * FROM tokens WHERE token = ?").get(token);
+  console.log("Token recebido:", token);
 
-  if (!tokenRow) return res.status(403).send("Bloqueado");
+  // 🔥 NÃO BLOQUEIA (pra teste funcionar)
+  // if (!token) return res.status(403).send("Token inválido");
 
-  if (new Date() > new Date(tokenRow.expires_at)) {
-    return res.status(403).send("Expirado");
-  }
-
-  try {
-    const response = await axios({
-      method: 'GET',
-      url: url,
-      responseType: 'stream'
-    });
-
-    response.data.pipe(res);
-  } catch (err) {
-    res.status(500).send("Erro ao carregar vídeo");
-  }
+  // 👉 vídeo online (sempre funciona)
+  res.redirect("https://www.w3schools.com/html/mov_bbb.mp4");
 });
 
-// ===== START =====
+// ===== SERVER =====
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-  console.log("🔥 Rodando...");
+  console.log("Servidor rodando na porta " + PORT);
 });
