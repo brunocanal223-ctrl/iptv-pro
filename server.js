@@ -38,7 +38,7 @@ app.get('/create-user', (req, res) => {
   res.send(`
   <html>
     <body style="font-family: Arial; text-align:center; margin-top:50px;">
-      <h2>🎬 Painel IPTV</h2>
+      <h2>🎬 Painel IPTV Cursos</h2>
 
       <button style="padding:10px 20px; margin:5px;" onclick="criar(30)">🔥 30 dias</button>
       <button style="padding:10px 20px; margin:5px;" onclick="criar(60)">🚀 60 dias</button>
