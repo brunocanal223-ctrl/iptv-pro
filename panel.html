@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IPTV Admin</title>
+</head>
+<body>
+
+<h1>Painel IPTV</h1>
+
+<button onclick="createUser()">Criar Usuário</button>
+
+<h2>Usuários</h2>
+<ul id="list"></ul>
+
+<script>
+async function createUser() {
+  const res = await fetch('http://localhost:3000/create-user', {
+    method: 'POST'
+  });
+  const data = await res.json();
+  alert(JSON.stringify(data, null, 2));
+  loadUsers();
+}
+
+async function loadUsers() {
+  const res = await fetch('http://localhost:3000/users');
+  const users = await res.json();
+
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+
+  users.forEach(u => {
+    const li = document.createElement('li');
+    li.innerText = u.username + ' - expira: ' + u.expires_at;
+    list.appendChild(li);
+  });
+}
+
+loadUsers();
+</script>
+
+</body>
+</html>
